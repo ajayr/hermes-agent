@@ -1547,7 +1547,10 @@ class GatewayRunner:
         source = event.source
 
         # Check if user is authorized
-        if not self._is_user_authorized(source):
+        # Special case: @mentions in group chats are authorized regardless of allowlist
+        if event.bot_mentioned and source.chat_type == "group":
+            logger.info("Authorized bot @mention in group from %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+        elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
