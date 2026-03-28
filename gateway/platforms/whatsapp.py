@@ -187,6 +187,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # Check if bridge is already running and connected
             import aiohttp
             import asyncio
+            bridge_already_running = False
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
@@ -204,12 +205,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
                                 return True
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
-            except Exception:
-                pass  # Bridge not running, start a new one
+                                bridge_already_running = True  # Found bridge, need to restart
+            except Exception as e:
+                print(f"[{self.name}] No existing bridge found: {e}")
+                # Bridge not running, will start a new one
             
-            # Kill any orphaned bridge from a previous gateway run
-            _kill_port_process(self._bridge_port)
-            await asyncio.sleep(1)
+            # Only kill port if we found a bridge that needs restarting (not if nothing was there)
+            if bridge_already_running:
+                print(f"[{self.name}] Killing stale bridge on port {self._bridge_port}")
+                _kill_port_process(self._bridge_port)
+                await asyncio.sleep(1)
             
             # Start the bridge process in its own process group.
             # Route output to a log file so QR codes, errors, and reconnection
@@ -760,6 +765,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                bot_mentioned=data.get("botMentioned", False),
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

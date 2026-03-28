@@ -321,6 +321,9 @@ class MessageEvent:
     # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
     auto_skill: Optional[str] = None
     
+    # Bot mention flag - for group chats where bot was @mentioned
+    bot_mentioned: bool = False
+    
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
