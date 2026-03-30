@@ -27,6 +27,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 
 import { randomBytes } from 'crypto';
 import qrcode from 'qrcode-terminal';
 import qrcodePng from 'qrcode';
+import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -48,13 +49,17 @@ const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'docume
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
-const ALLOWED_USERS = (process.env.WHATSAPP_ALLOWED_USERS || '').split(',').map(s => s.trim()).filter(Boolean);
+const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
 
 function formatOutgoingMessage(message) {
+  // In bot mode, messages come from a different number so the prefix is
+  // redundant — the sender identity is already clear.  Only prepend in
+  // self-chat mode where bot and user share the same number.
+  if (WHATSAPP_MODE !== 'self-chat') return message;
   return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
 }
 
@@ -100,7 +105,7 @@ async function startSocket() {
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
-    markOnlineOnConnect: true,
+    markOnlineOnConnect: false,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
     getMessage: async (key) => {
@@ -118,11 +123,6 @@ async function startSocket() {
     if (qr) {
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
       qrcode.generate(qr, { small: true });
-      // Save PNG for easy viewing
-      const qrPath = '/tmp/whatsapp-qr.png';
-      qrcodePng.toFile(qrPath, qr, { width: 400 }).then(() => {
-        console.log(`\n📸 QR code also saved to: ${qrPath}\n`);
-      }).catch(() => {});
       console.log('\nWaiting for scan...\n');
     }
 
@@ -199,42 +199,32 @@ async function startSocket() {
       // In group chats (bot mode), check @mention FIRST before allowlist
       // This allows anyone to @mention the bot, not just allowed users
       if (isGroup && WHATSAPP_MODE === 'bot') {
-        const myJid = sock.user?.id; // e.g., "447832325050:8@s.whatsapp.net" (with device ID)
-        const myLid = sock.user?.lid; // e.g., "120474520522851:8@lid"
+        const myJid = sock.user?.id;
+        const myLid = sock.user?.lid;
         if (WHATSAPP_DEBUG) {
           console.log(JSON.stringify({ event: 'mention_check', myJid, myLid, chatId }));
         }
         if (!myJid && !myLid) {
-          // Can't determine our own identity, skip this message
           if (WHATSAPP_DEBUG) console.log('[bridge] No myJid/myLid available, skipping group message');
           continue;
         }
 
-        // Check for mentions in extendedTextMessage (regular @mentions)
         const mentions = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
-        // Also check for mentions in imageMessage caption
         const imageCaption = msg.message.imageMessage?.caption || '';
         const videoCaption = msg.message.videoMessage?.caption || '';
         const captionMentionsMatch = [...imageCaption.matchAll(/@\d+/g), ...videoCaption.matchAll(/@\d+/g)].map(m => m[0].slice(1));
         
-        // Normalize IDs for comparison - strip device prefix (:X)
-        // JID format: "447579101724:8@s.whatsapp.net" -> phone "447579101724"
-        // LID format: "120474520522851:8@lid" -> normalized "120474520522851@lid"
         const myNumber = myJid ? myJid.split(':')[0].split('@')[0] : '';
-        const myLidNormalized = myLid ? myLid.replace(/:\d+/, '') : ''; // "120474520522851@lid"
+        const myLidNormalized = myLid ? myLid.replace(/:\d+/, '') : '';
         
-        // Check if any mention matches us (by LID or by phone number)
         const isMentioned = mentions.some(m => {
-          const mNormalized = m.replace(/:\d+/, ''); // Strip device prefix
-          // Compare LID to LID
+          const mNormalized = m.replace(/:\d+/, '');
           if (myLidNormalized && mNormalized === myLidNormalized) return true;
-          // Compare phone number (for JID-style mentions)
           const mNum = m.split(':')[0].split('@')[0];
           if (myNumber && mNum === myNumber) return true;
           return false;
         }) || captionMentionsMatch.some(num => num === myNumber);
 
-        // Also check if replying to our message
         const replyParticipant = msg.message.extendedTextMessage?.contextInfo?.participant;
         const isReplyToUs = replyParticipant && (
           replyParticipant === myJid ||
@@ -253,16 +243,12 @@ async function startSocket() {
           continue;
         }
         
-        // In bot mode, @mentions from ANYONE are accepted - skip the allowlist check
         if (WHATSAPP_DEBUG) console.log('[bridge] Group @mention detected, accepting message');
-        
-        // Mark this as a bot mention so the gateway knows to authorize it
         global.botMentioned = true;
       } else {
-        // For non-group or non-bot mode, check allowlist for messages from others
-        if (!msg.key.fromMe && ALLOWED_USERS.length > 0) {
-          const resolvedNumber = lidToPhone[senderNumber] || senderNumber;
-          if (!ALLOWED_USERS.includes(resolvedNumber)) continue;
+        // Check allowlist for messages from others
+        if (!msg.key.fromMe && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+          continue;
         }
         global.botMentioned = false;
       }
@@ -377,25 +363,11 @@ async function startSocket() {
         mediaType,
         mediaUrls,
         timestamp: msg.messageTimestamp,
-        botMentioned: global.botMentioned || false,
       };
 
       messageQueue.push(event);
       if (messageQueue.length > MAX_QUEUE_SIZE) {
         messageQueue.shift();
-      }
-      if (WHATSAPP_DEBUG) {
-        console.log('[bridge] Queued message:', JSON.stringify({ chatId, senderId, body: body.substring(0, 50), queueLength: messageQueue.length }));
-      }
-
-      // Send read receipt (blue ticks) for incoming messages
-      try {
-        await sock.readMessages([msg.key]);
-      } catch (err) {
-        // Non-fatal: read receipts may fail for various reasons
-        if (WHATSAPP_DEBUG) {
-          console.log('[bridge] Failed to send read receipt:', err.message);
-        }
       }
     }
   });
@@ -600,8 +572,8 @@ if (PAIR_ONLY) {
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
-    if (ALLOWED_USERS.length > 0) {
-      console.log(`🔒 Allowed users: ${ALLOWED_USERS.join(', ')}`);
+    if (ALLOWED_USERS.size > 0) {
+      console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);
     } else {
       console.log(`⚠️  No WHATSAPP_ALLOWED_USERS set — all messages will be processed`);
     }
