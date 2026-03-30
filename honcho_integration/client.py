@@ -137,8 +137,18 @@ class HonchoClientConfig:
     @classmethod
     def from_env(cls, workspace_id: str = "hermes") -> HonchoClientConfig:
         """Create config from environment variables (fallback)."""
-        api_key = os.environ.get("HONCHO_API_KEY")
+        api_key=os.environ.get("HONCHO_API_KEY", "").strip() or None
         base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
+        # Also try Hermes config.yaml for self-hosted setups
+        if not base_url:
+            try:
+                from hermes_cli.config import load_config
+                hermes_cfg = load_config()
+                honcho_cfg = hermes_cfg.get("honcho", {})
+                if isinstance(honcho_cfg, dict):
+                    base_url = honcho_cfg.get("base_url", "").strip() or None
+            except Exception:
+                pass
         return cls(
             workspace_id=workspace_id,
             api_key=api_key,
@@ -198,10 +208,21 @@ class HonchoClientConfig:
         )
 
         base_url = (
-            raw.get("baseUrl")
+            host_block.get("baseUrl")
+            or raw.get("baseUrl")
             or os.environ.get("HONCHO_BASE_URL", "").strip()
             or None
         )
+        if not base_url:
+            # Fallback: read from Hermes config.yaml (for self-hosted setups)
+            try:
+                from hermes_cli.config import load_config
+                hermes_cfg = load_config()
+                honcho_cfg = hermes_cfg.get("honcho", {})
+                if isinstance(honcho_cfg, dict):
+                    base_url = honcho_cfg.get("base_url", "").strip() or None
+            except Exception:
+                pass
 
         # Auto-enable when API key or base_url is present (unless explicitly disabled)
         # Host-level enabled wins, then root-level, then auto-enable if key/url exists.

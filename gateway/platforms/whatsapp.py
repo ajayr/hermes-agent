@@ -142,6 +142,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._bridge_log_fh = None
         self._bridge_log: Optional[Path] = None
         self._poll_task: Optional[asyncio.Task] = None
+        self._shutting_down: bool = False
     
     async def connect(self) -> bool:
         """
@@ -340,6 +341,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if returncode is None:
             return None
 
+        # SIGTERM (-15) during shutdown is expected - not an error
+        if returncode == -15 and self._shutting_down:
+            logger.info("[%s] Bridge stopped during shutdown (code -15)", self.name)
+            return None
+
         message = f"WhatsApp bridge process exited unexpectedly (code {returncode})."
         if not self.has_fatal_error:
             logger.error("[%s] %s", self.name, message)
@@ -350,6 +356,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop the WhatsApp bridge and clean up any orphaned processes."""
+        self._shutting_down = True  # Flag to recognize graceful termination
         if self._bridge_process:
             try:
                 # Kill the entire process group so child node processes die too

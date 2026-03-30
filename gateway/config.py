@@ -482,6 +482,14 @@ def load_gateway_config() -> GatewayConfig:
                 for plat_name, plat_block in yaml_platforms.items():
                     if not isinstance(plat_block, dict):
                         continue
+                    # Handle YAML 1.1 booleans: off/on/yes/no become False/True
+                    # Convert them back to strings for reply_to_mode
+                    if "reply_to_mode" in plat_block:
+                        val = plat_block["reply_to_mode"]
+                        if val is False:
+                            plat_block["reply_to_mode"] = "off"
+                        elif val is True:
+                            plat_block["reply_to_mode"] = "on"  # unlikely but handle it
                     existing = platforms_data.get(plat_name, {})
                     if not isinstance(existing, dict):
                         existing = {}

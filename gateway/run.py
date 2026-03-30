@@ -335,6 +335,7 @@ class GatewayRunner:
         # Both are injected at API-call time only and never persisted.
         self._prefill_messages = self._load_prefill_messages()
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
+        self._channel_personalities = self._load_channel_personalities()
         self._reasoning_config = self._load_reasoning_config()
         self._show_reasoning = self._load_show_reasoning()
         self._provider_routing = self._load_provider_routing()
@@ -827,6 +828,71 @@ class GatewayRunner:
             pass
         return ""
 
+    def _load_channel_personalities(self) -> dict:
+        """Load channel-to-personality mappings from config.yaml.
+        
+        Returns a dict mapping chat_id strings to personality names.
+        Config format:
+          agent:
+            channel_personalities:
+              "discord:123456789": polyquant
+              "telegram:-1001234567890": kawaii
+        """
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return cfg.get("agent", {}).get("channel_personalities", {}) or {}
+        except Exception:
+            pass
+        return {}
+
+    def _resolve_channel_personality(self, source, platform_key: str) -> str:
+        """Resolve channel-specific personality prompt for the given source.
+        
+        Looks up channel_personalities config and resolves the personality name
+        to its full prompt. Returns empty string if no channel-specific personality
+        is configured for this chat.
+        """
+        # Build the lookup key: "platform:chat_id"
+        chat_id = str(source.chat_id)
+        lookup_key = f"{platform_key}:{chat_id}"
+        
+        # Also try without platform prefix for backward compatibility
+        channel_personalities = self._channel_personalities or {}
+        
+        personality_name = channel_personalities.get(lookup_key) or channel_personalities.get(chat_id)
+        
+        if not personality_name:
+            return ""
+        
+        # Load the personalities to resolve the name to its prompt
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                personalities = cfg.get("agent", {}).get("personalities", {}) or {}
+                
+                if personality_name in personalities:
+                    # Resolve the prompt (same logic as _handle_personality_command)
+                    value = personalities[personality_name]
+                    if isinstance(value, dict):
+                        parts = [value.get("system_prompt", "")]
+                        if value.get("tone"):
+                            parts.append(f'Tone: {value["tone"]}')
+                        if value.get("style"):
+                            parts.append(f'Style: {value["style"]}')
+                        return "\n".join(p for p in parts if p)
+                    return str(value)
+        except Exception:
+            pass
+        
+        return ""
+
     @staticmethod
     def _load_reasoning_config() -> dict | None:
         """Load reasoning effort from config with env fallback.
@@ -1099,7 +1165,7 @@ class GatewayRunner:
         self._running = True
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(gateway_state="running", exit_reason=None)
+            write_runtime_status(gateway_state="running", clear_exit_reason=True)
         except Exception:
             pass
         
@@ -3064,16 +3130,25 @@ class GatewayRunner:
         if not personalities:
             return "No personalities configured in `~/.hermes/config.yaml`"
 
+        # Load channel personality mappings
+        channel_personalities = config.get("agent", {}).get("channel_personalities", {})
+
         if not args:
             lines = ["🎭 **Available Personalities**\n"]
             lines.append("• `none` — (no personality overlay)")
             for name, prompt in personalities.items():
+                # Check if this personality is used as a channel default
+                channels_using = [ch for ch, pname in channel_personalities.items() if pname == name]
+                channel_suffix = f" _(default for: {', '.join(channels_using)})_" if channels_using else ""
+                
                 if isinstance(prompt, dict):
                     preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
                 else:
                     preview = prompt[:50] + "..." if len(prompt) > 50 else prompt
-                lines.append(f"• `{name}` — {preview}")
-            lines.append("\nUsage: `/personality <name>`")
+                lines.append(f"• `{name}` — {preview}{channel_suffix}")
+            if channel_personalities:
+                lines.append("\n**Channel defaults:** Some personalities are auto-activated for specific channels.")
+            lines.append("\nUsage: `/personality <name>` to set globally (overrides channel defaults)")
             return "\n".join(lines)
 
         def _resolve_prompt(value):
@@ -5139,11 +5214,15 @@ class GatewayRunner:
             if not _status_adapter:
                 return
             try:
+                # Context pressure notifications should go to main channel, not thread
+                _metadata = None
+                if event_type != "context_pressure":
+                    _metadata = _status_thread_metadata
                 asyncio.run_coroutine_threadsafe(
                     _status_adapter.send(
                         _status_chat_id,
                         message,
-                        metadata=_status_thread_metadata,
+                        metadata=_metadata,
                     ),
                     _loop_for_step,
                 )
@@ -5164,7 +5243,15 @@ class GatewayRunner:
             
             # Combine platform context with user-configured ephemeral system prompt
             combined_ephemeral = context_prompt or ""
-            if self._ephemeral_system_prompt:
+            
+            # Check for channel-specific personality (overrides global personality)
+            channel_personality_prompt = self._resolve_channel_personality(source, platform_key)
+            
+            if channel_personality_prompt:
+                # Channel personality takes precedence
+                combined_ephemeral = (combined_ephemeral + "\n\n" + channel_personality_prompt).strip()
+            elif self._ephemeral_system_prompt:
+                # Fall back to global personality set via /personality command
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
@@ -5175,6 +5262,9 @@ class GatewayRunner:
                 load_dotenv(_env_path, override=True, encoding="latin-1")
             except Exception:
                 pass
+            
+            # Also reload channel personalities (config may change without restart)
+            self._channel_personalities = self._load_channel_personalities()
 
             model = _resolve_gateway_model(user_config)
 

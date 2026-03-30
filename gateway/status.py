@@ -192,6 +192,8 @@ def write_runtime_status(
     platform_state: Optional[str] = None,
     error_code: Optional[str] = None,
     error_message: Optional[str] = None,
+    clear_exit_reason: bool = False,
+    clear_platform_error: bool = False,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
@@ -204,17 +206,28 @@ def write_runtime_status(
 
     if gateway_state is not None:
         payload["gateway_state"] = gateway_state
-    if exit_reason is not None:
+    
+    # Clear exit_reason explicitly or set new value
+    if clear_exit_reason:
+        payload.pop("exit_reason", None)
+    elif exit_reason is not None:
         payload["exit_reason"] = exit_reason
 
     if platform is not None:
         platform_payload = payload["platforms"].get(platform, {})
         if platform_state is not None:
             platform_payload["state"] = platform_state
-        if error_code is not None:
-            platform_payload["error_code"] = error_code
-        if error_message is not None:
-            platform_payload["error_message"] = error_message
+        
+        # Clear platform error fields explicitly
+        if clear_platform_error:
+            platform_payload.pop("error_code", None)
+            platform_payload.pop("error_message", None)
+        else:
+            if error_code is not None:
+                platform_payload["error_code"] = error_code
+            if error_message is not None:
+                platform_payload["error_message"] = error_message
+        
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
 

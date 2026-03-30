@@ -439,7 +439,7 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_retryable = True
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(platform=self.platform.value, platform_state="connected", error_code=None, error_message=None)
+            write_runtime_status(platform=self.platform.value, platform_state="connected", clear_platform_error=True)
         except Exception:
             pass
 
@@ -449,7 +449,7 @@ class BasePlatformAdapter(ABC):
             return
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(platform=self.platform.value, platform_state="disconnected", error_code=None, error_message=None)
+            write_runtime_status(platform=self.platform.value, platform_state="disconnected", clear_platform_error=True)
         except Exception:
             pass
 

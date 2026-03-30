@@ -515,16 +515,19 @@ class DiscordAdapter(BasePlatformAdapter):
             async def on_ready():
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
                 
+                # Signal ready immediately - don't wait for slash command sync
+                # which can hit rate limits and take longer than the connection timeout
+                adapter_self._ready_event.set()
+                
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
                 
-                # Sync slash commands with Discord
+                # Sync slash commands with Discord (best-effort, non-blocking for ready)
                 try:
                     synced = await adapter_self._client.tree.sync()
                     logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
-                adapter_self._ready_event.set()
             
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -594,7 +597,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # Wait for ready
             await asyncio.wait_for(self._ready_event.wait(), timeout=30)
             
-            self._running = True
+            self._mark_connected()
             return True
             
         except asyncio.TimeoutError:
