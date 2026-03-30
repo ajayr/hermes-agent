@@ -105,7 +105,7 @@ async function startSocket() {
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
-    markOnlineOnConnect: false,
+    markOnlineOnConnect: true,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
     getMessage: async (key) => {
@@ -368,6 +368,13 @@ async function startSocket() {
       messageQueue.push(event);
       if (messageQueue.length > MAX_QUEUE_SIZE) {
         messageQueue.shift();
+      }
+
+      // Mark message as read (blue ticks)
+      try {
+        await sock.readMessages([msg.key]);
+      } catch (err) {
+        if (WHATSAPP_DEBUG) console.log('[bridge] Failed to mark as read:', err.message);
       }
     }
   });
