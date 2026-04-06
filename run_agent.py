@@ -673,22 +673,10 @@ class AIAgent:
         self._budget_warning_threshold = 0.9   # 90% — urgent, respond now
         self._budget_pressure_enabled = True
 
-        # Load config once for display, memory, skills, and compression sections.
-        try:
-            from hermes_cli.config import load_config as _load_agent_config
-            _agent_cfg = _load_agent_config()
-        except Exception:
-            _agent_cfg = {}
-
         # Context pressure warnings: notify the USER (not the LLM) as context
         # fills up.  Purely informational — displayed in CLI output and sent via
         # status_callback for gateway platforms.  Does NOT inject into messages.
         self._context_pressure_warned = False
-        # Check if context pressure alerts are suppressed globally
-        self._suppress_context_pressure = False
-        if _agent_cfg:
-            display_cfg = _agent_cfg.get("display", {})
-            self._suppress_context_pressure = display_cfg.get("suppress_context_pressure", False)
 
         # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
@@ -1037,6 +1025,13 @@ class AIAgent:
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
+        
+        # Load config once for memory, skills, and compression sections
+        try:
+            from hermes_cli.config import load_config as _load_agent_config
+            _agent_cfg = _load_agent_config()
+        except Exception:
+            _agent_cfg = {}
 
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
@@ -2310,6 +2305,7 @@ class AIAgent:
 
     # ── Honcho integration helpers ──
 
+    def _honcho_should_activate(self, hcfg) -> bool:
         """Return True when Honcho should be active.
 
         Self-hosted Honcho may be configured with a base_url and no API key,
@@ -2318,10 +2314,6 @@ class AIAgent:
         if not hcfg or not hcfg.enabled:
             return False
         if not (hcfg.api_key or hcfg.base_url):
-            return False
-            return False
-        if not (hcfg.api_key or hcfg.base_url):
->>>>>>> upstream/main
             return False
         return True
 
@@ -7737,8 +7729,7 @@ class AIAgent:
                     # compaction fires, not the raw context window.
                     # Does not inject into messages — just prints to CLI output
                     # and fires status_callback for gateway platforms.
-                    # Can be suppressed via display.suppress_context_pressure in config.
-                    if _compressor.threshold_tokens > 0 and not self._suppress_context_pressure:
+                    if _compressor.threshold_tokens > 0:
                         _compaction_progress = _real_tokens / _compressor.threshold_tokens
                         if _compaction_progress >= 0.85 and not self._context_pressure_warned:
                             self._context_pressure_warned = True
