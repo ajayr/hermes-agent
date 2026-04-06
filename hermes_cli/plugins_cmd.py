@@ -41,6 +41,11 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
     if not name:
         raise ValueError("Plugin name must not be empty.")
 
+    if name in (".", ".."):
+        raise ValueError(
+            f"Invalid plugin name '{name}': must not reference the plugins directory itself."
+        )
+
     # Reject obvious traversal characters
     for bad in ("/", "\\", ".."):
         if bad in name:
@@ -49,10 +54,14 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
     target = (plugins_dir / name).resolve()
     plugins_resolved = plugins_dir.resolve()
 
-    if (
-        not str(target).startswith(str(plugins_resolved) + os.sep)
-        and target != plugins_resolved
-    ):
+    if target == plugins_resolved:
+        raise ValueError(
+            f"Invalid plugin name '{name}': resolves to the plugins directory itself."
+        )
+
+    try:
+        target.relative_to(plugins_resolved)
+    except ValueError:
         raise ValueError(
             f"Invalid plugin name '{name}': resolves outside the plugins directory."
         )
@@ -265,10 +274,11 @@ def cmd_install(identifier: str, force: bool = False) -> None:
                 )
                 sys.exit(1)
             if mv_int > _SUPPORTED_MANIFEST_VERSION:
+                from hermes_cli.config import recommended_update_command
                 console.print(
                     f"[red]Error:[/red] Plugin '{plugin_name}' requires manifest_version "
                     f"{mv}, but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}.\n"
-                    f"Run [bold]hermes update[/bold] to get a newer installer."
+                    f"Run [bold]{recommended_update_command()}[/bold] to get a newer installer."
                 )
                 sys.exit(1)
 
